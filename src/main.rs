@@ -1,4 +1,11 @@
-use std::{io::BufWriter, io::Write, net::TcpListener};
+use std::net::{TcpListener, TcpStream};
+use std::{io::BufRead, io::BufReader};
+use std::{io::BufWriter, io::Write};
+
+fn pong(writer: &mut BufWriter<&TcpStream>) {
+    writer.write("+PONG\r\n".as_bytes()).unwrap();
+    writer.flush().unwrap();
+}
 
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -9,12 +16,24 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(_stream) => {
+                let mut reader = BufReader::new(&_stream);
                 let mut writer = BufWriter::new(&_stream);
-                writer
-                    .write("+PONG\r\n".as_bytes())
-                    .expect("SEND FAILURE!!!");
-                writer.flush().unwrap();
 
+                loop {
+                    let mut msg = String::new();
+                    let result = reader.read_line(&mut msg);
+                    match result {
+                        Ok(_size) => {
+                            println!("{}", msg);
+                            if msg.as_str() == "ping\r\n" {
+                                pong(&mut writer);
+                            }
+                        }
+                        Err(_error) => {
+                            break;
+                        }
+                    }
+                }
                 println!("accepted new connection");
             }
             Err(e) => {
