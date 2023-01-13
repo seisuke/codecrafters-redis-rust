@@ -1,7 +1,8 @@
 use std::io;
 use std::str;
+use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 #[derive(Debug)]
 pub enum Frame {
@@ -53,38 +54,45 @@ impl Parser<'_> {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:6379").await.unwrap();
-
     loop {
         let (mut socket, addr) = listener.accept().await?;
         println!("new client: {:?}", addr);
         tokio::spawn(async move {
             let mut buf = vec![0; 1024];
+            let mut map: HashMap<String, String> = HashMap::new();
             loop {
                 match socket.read(&mut buf).await {
                     Ok(0) => return,
                     Ok(_) => {
-                        let all = str::from_utf8(&buf).expect("");
-                        let command: Vec<&str> = all.split("\r\n").collect();
-                        println!("command\n{}", all);
-                        let mut parser = Parser::new(command);
+                        let request = str::from_utf8(&buf).expect("");
+                        let frames: Vec<&str> = request.split("\r\n").collect();
+                        println!("command\n{}", request);
+                        let mut parser = Parser::new(frames);
                         let frame = parser.parse_frame();
                         println!("frame {:?}", frame);
                         match frame {
                             Frame::String(_) => {}
                             Frame::Array(array) => match array.as_slice() {
-                                [Frame::String(msg)] => {
-                                    if msg == "ping" {
-                                        if socket.write_all("+PONG\r\n".as_bytes()).await.is_err() {
-                                            eprintln!("write error");
-                                        }
+                                [Frame::String(command)] => {
+                                    if command == "ping" {
+                                        send_response(&mut socket, "+PONG\r\n".to_string()).await
                                     }
                                 }
-                                [Frame::String(command), Frame::String(value)] => {
+                                [Frame::String(command), Frame::String(key)] => {
                                     if command == "echo" {
-                                        let response = format!("${}\r\n{}\r\n", value.len(), value);
-                                        if socket.write_all(response.as_bytes()).await.is_err() {
-                                            eprintln!("write error");
-                                        }
+                                        let response = bulk_string(key);
+                                        send_response(&mut socket, response).await
+                                    } else if command == "get" {
+                                        let value = map.get(key).unwrap();
+                                        let response = bulk_string(value);
+                                        send_response(&mut socket, response).await
+                                    }
+                                }
+                                [Frame::String(command), Frame::String(key), Frame::String(value)] => {
+                                    if command == "set" {
+                                        map.insert(key.to_string(), value.to_string());
+                                        let response = bulk_string(&"OK".to_string());
+                                        send_response(&mut socket, response).await
                                     }
                                 }
                                 _ => {
@@ -99,5 +107,15 @@ async fn main() -> io::Result<()> {
                 }
             }
         });
+    }
+}
+
+fn bulk_string(value: &String) -> String {
+    format!("${}\r\n{}\r\n", value.len(), value)
+}
+
+async fn send_response(socket: &mut TcpStream, response: String) {
+    if socket.write_all(response.as_bytes()).await.is_err() {
+        eprintln!("write error");
     }
 }
